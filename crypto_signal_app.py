@@ -96,5 +96,5 @@ for coin, coin_id in coin_ids.items():
         st.line_chart(df_chart)
 
 st.info("🔄 Auto-refreshes every 30 seconds.")
-st.experimental_rerun()
+st.rerun()
 time.sleep(30)
