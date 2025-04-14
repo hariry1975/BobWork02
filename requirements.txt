@@ -3,3 +3,4 @@ requests
 pandas
 pandas_ta
 supabase
+numpy==1.24.4
