@@ -1,6 +1,6 @@
 streamlit
 requests
 pandas
-pandas_ta
+ta
 supabase
-numpy==1.24.4
+
