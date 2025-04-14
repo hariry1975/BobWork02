@@ -1,101 +1,100 @@
 import streamlit as st
-import requests
 import pandas as pd
-import pandas_ta as ta
+import requests
+from ta.momentum import RSIIndicator
+from ta.trend import SMAIndicator
 import time
-from supabase import create_client, Client
-import os
+from supabase import create_client
 
-# Supabase credentials (you can use st.secrets or os.getenv in production)
-SUPABASE_URL = "https://ncrxfifndtbinniykddg.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jcnhmaWZuZHRiaW5uaXlrZGRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDQ2MjQ2NjEsImV4cCI6MjA2MDIwMDY2MX0.wvzWT-8IqCTcA4CauJCm8KCEtQXPoJqv_Lh3tzpF1Lg"
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# === Supabase Setup ===
+url = "https://ncrxfifndtbinniykddg.supabase.co"
+key = "your_supabase_key_here"
+supabase = create_client(url, key)
 
-st.set_page_config(page_title="Crypto Signal App", layout="wide")
-st.title("🚀 Live Crypto Buy/Sell Signals")
+# === Settings ===
+st.set_page_config(layout="wide")
+st.title("🚀 Live Crypto Signal App")
 
-# Coin list with CoinGecko IDs
 coin_ids = {
     "DOGE": "dogecoin",
     "XRP": "ripple",
     "ADA": "cardano",
-    "TRUMP": "maga"
+    "TRUMP": "trumpcoin"  # make sure this ID is correct in CoinGecko
 }
 
-refresh_interval = 30  # seconds
-
+# === Utility Functions ===
 def get_live_price(coin_id):
     url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
-    try:
-        response = requests.get(url)
-        data = response.json()
-        return data[coin_id]['usd']
-    except:
-        return None
+    r = requests.get(url)
+    data = r.json()
+    return data.get(coin_id, {}).get("usd", None)
 
 def calculate_rsi(prices, period=14):
-    try:
-        close_series = pd.Series(prices)
-        rsi = ta.rsi(close_series, length=period)
-        return rsi.iloc[-1] if not rsi.empty else None
-    except:
+    if len(prices) < period:
         return None
+    df = pd.DataFrame(prices, columns=["close"])
+    rsi = RSIIndicator(close=df["close"], window=period)
+    return rsi.rsi().iloc[-1]
 
-def calculate_sma(prices, length=5):
-    prices = [p for p in prices if p is not None]
-    if len(prices) >= length:
-        return sum(prices[-length:]) / length
-    return None
+def calculate_sma(prices, period=5):
+    if len(prices) < period:
+        return None
+    df = pd.DataFrame(prices, columns=["close"])
+    sma = SMAIndicator(close=df["close"], window=period)
+    return sma.sma_indicator().iloc[-1]
 
-def store_data_to_supabase(symbol, price, rsi, sma):
-    supabase.table("crypto_signals").insert({
+def store_to_supabase(symbol, price, rsi, sma):
+    supabase.table("crypto_data").insert({
         "symbol": symbol,
         "price": price,
         "rsi": rsi,
         "sma": sma,
-        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+        "timestamp": int(time.time())
     }).execute()
 
-for symbol, coin_id in coin_ids.items():
+# === Main Section ===
+for coin, coin_id in coin_ids.items():
     with st.container():
-        st.subheader(f"📈 {symbol} - {coin_id.title()}")
+        st.subheader(f"{coin} 🪙")
 
         prices = []
         for _ in range(13):
             price = get_live_price(coin_id)
-            prices.append(price)
-            time.sleep(0.2)  # To avoid hitting API rate limits
+            if price:
+                prices.append(price)
+            time.sleep(0.2)  # avoid hitting rate limits
 
+        # Add current price as the 14th point
         live_price = get_live_price(coin_id)
         prices.append(live_price)
 
-        rsi = calculate_rsi(prices)
-        sma = calculate_sma(prices)
+        if None in prices or not live_price:
+            st.warning("❌ Could not retrieve price data.")
+            continue
 
-        col1, col2, col3 = st.columns(3)
+        latest_rsi = calculate_rsi(prices)
+        latest_sma = calculate_sma(prices)
 
-        col1.metric("Live Price (USD)", f"${live_price:.4f}" if live_price else "N/A")
-        col2.metric("RSI", f"{rsi:.2f}" if rsi else "Calculating...")
-        col3.metric("SMA", f"{sma:.4f}" if sma else "Calculating...")
+        store_to_supabase(coin, live_price, latest_rsi, latest_sma)
 
-        if rsi and sma:
-            if rsi < 30 and live_price > sma:
-                st.success("✅ **BUY SIGNAL**: RSI is low and price is above SMA")
-            elif rsi > 70 and live_price < sma:
-                st.error("❌ **SELL SIGNAL**: RSI is high and price is below SMA")
+        st.metric(label=f"{coin} Price", value=f"${live_price:.4f}")
+        if latest_rsi is not None:
+            if latest_rsi < 30:
+                st.success(f"✅ RSI = {latest_rsi:.2f} → Good time to BUY.")
+            elif latest_rsi > 70:
+                st.error(f"⚠️ RSI = {latest_rsi:.2f} → Consider SELLING.")
             else:
-                st.info("ℹ️ No strong buy/sell signal right now. Keep watching.")
+                st.warning(f"😐 RSI = {latest_rsi:.2f} → Neutral.")
         else:
-            st.warning("⏳ Waiting for enough data to calculate indicators.")
+            st.info("ℹ️ RSI not available yet.")
 
-        # Plot chart
-        if all(p is not None for p in prices):
-            df = pd.DataFrame({"Price": prices})
-            st.line_chart(df)
+        if latest_sma:
+            st.write(f"📈 SMA (5) = {latest_sma:.4f}")
 
-        # Store to Supabase
-        if live_price:
-            store_data_to_supabase(symbol, live_price, rsi, sma)
+        # Chart
+        df_chart = pd.DataFrame(prices, columns=["Price"])
+        st.line_chart(df_chart)
 
-st.caption(f"🔁 Auto-refreshes every {refresh_interval} seconds.")
-st.experimental_rerun() if st.button("🔄 Refresh Now") else time.sleep(refresh_interval)
+st.info("🔄 Auto-refreshes every 30 seconds.")
+st.experimental_rerun()
+time.sleep(30)
