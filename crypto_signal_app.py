@@ -8,7 +8,7 @@ from supabase import create_client
 
 # === Supabase Setup ===
 url = "https://ncrxfifndtbinniykddg.supabase.co"
-key = "your_supabase_key_here"
+key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jcnhmaWZuZHRiaW5uaXlrZGRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDQ2MjQ2NjEsImV4cCI6MjA2MDIwMDY2MX0.wvzWT-8IqCTcA4CauJCm8KCEtQXPoJqv_Lh3tzpF1Lg"
 supabase = create_client(url, key)
 
 # === Settings ===
