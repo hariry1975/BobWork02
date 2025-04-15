@@ -1,101 +1,110 @@
+
+
 import streamlit as st
 import requests
-import time
-from datetime import datetime
-from supabase import create_client, Client
 import pandas as pd
+import datetime
+from supabase import create_client, Client
 
-# === Supabase Setup ===
+# ---- Supabase Config ----
 SUPABASE_URL = "https://ncrxfifndtbinniykddg.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jcnhmaWZuZHRiaW5uaXlrZGRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDQ2MjQ2NjEsImV4cCI6MjA2MDIwMDY2MX0.wvzWT-8IqCTcA4CauJCm8KCEtQXPoJqv_Lh3tzpF1Lg"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Coins to track
-coins = {
-    "dogecoin": "Dogecoin",
-    "ripple": "XRP",
-    "cardano": "Cardano",
-    "trump": "TrumpCoin"
+
+# ---- Coin List ----
+coin_ids = {
+    "DOGE": "dogecoin",
+    "XRP": "ripple",
+    "ADA": "cardano",
+    "TRUMP": "trump"
 }
 
-# Helper to get live prices
-def fetch_price(coin_id):
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+# ---- Fetch Live Price ----
+def get_live_price(coin_id):
     try:
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
         response = requests.get(url)
         data = response.json()
-        return data[coin_id]["usd"]
+        return data[coin_id]['usd']
     except:
         return None
 
-# Save to Supabase
+# ---- Calculate RSI ----
+def calculate_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return None
+    delta = pd.Series(prices).diff()
+    gain = delta.clip(lower=0).rolling(window=period).mean()
+    loss = -delta.clip(upper=0).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs)).iloc[-1]
+
+# ---- Calculate SMA ----
+def calculate_sma(prices, length=5):
+    clean_prices = [p for p in prices[-length:] if p is not None]
+    if len(clean_prices) < length:
+        return None
+    return sum(clean_prices) / length
+
+# ---- Save to Supabase ----
 def save_data_to_supabase(symbol, price):
+    now = datetime.datetime.now().isoformat()
     try:
-        now = datetime.utcnow().isoformat()
         supabase.table("prices").insert({
             "symbol": symbol,
             "price": price,
             "timestamp": now
         }).execute()
     except Exception as e:
-        st.error(f"Failed to save data: {e}")
+        st.error(f"❌ Failed to save {symbol} data: {e}")
 
-# Calculate RSI
-def calculate_rsi(prices, period=14):
-    if len(prices) < period:
-        return None
-    deltas = pd.Series(prices).diff().dropna()
-    gain = deltas.where(deltas > 0, 0.0)
-    loss = -deltas.where(deltas < 0, 0.0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1] if not rsi.empty else None
+# ---- UI ----
+st.set_page_config(page_title="📊 Crypto Signal App", layout="wide")
+st.title("📈 Real-Time Crypto Signal Dashboard")
 
-# App layout
-st.set_page_config(page_title="Crypto Signal App", layout="wide")
-st.title("📈 Real-Time Crypto Signal App")
-
-# Main logic
-for coin_id, coin_name in coins.items():
+# ---- Main Loop ----
+for symbol, coin_id in coin_ids.items():
     with st.container():
-        st.subheader(f"💰 {coin_name}")
+        st.subheader(f"💰 {symbol}")
 
-        # Get last 13 historical prices
+        # Fetch and store 14 price points (13 history + 1 live)
         prices = []
-        while len(prices) < 13:
-            price = fetch_price(coin_id)
-            if price:
-                prices.append(price)
-                time.sleep(1)
+        for _ in range(13):
+            price = get_live_price(coin_id)
+            prices.append(price)
+        latest_price = get_live_price(coin_id)
+        prices.append(latest_price)
 
-        # Get live price
-        live_price = fetch_price(coin_id)
-        if live_price:
-            prices.append(live_price)
-            save_data_to_supabase(coin_id, live_price)
-            st.metric(label="Live Price (USD)", value=f"${live_price:.4f}")
+        if latest_price:
+            st.metric(label="Current Price (USD)", value=f"${latest_price:.4f}")
+            save_data_to_supabase(symbol, latest_price)
         else:
-            st.error("Could not retrieve price data.")
+            st.error("⚠️ Could not retrieve price data.")
+            continue
 
-        # RSI
+        # Calculate RSI
         rsi = calculate_rsi(prices)
         if rsi is not None:
             if rsi < 30:
-                st.success(f"📉 RSI = {rsi:.2f} → BUY Signal")
+                st.success(f"📉 RSI = {rsi:.2f} → **Buy Signal**")
             elif rsi > 70:
-                st.warning(f"📈 RSI = {rsi:.2f} → SELL Signal")
+                st.warning(f"📈 RSI = {rsi:.2f} → **Sell Signal**")
             else:
                 st.info(f"⏳ RSI = {rsi:.2f} → No strong signal yet.")
         else:
-            st.info("⏳ RSI data is not available yet. Waiting for more data...")
+            st.info("⏳ RSI not available yet. Waiting for enough data.")
 
-        # Chart
-        df = pd.DataFrame({"Price": prices}, index=[datetime.utcnow().strftime("%H:%M:%S")] * len(prices))
+        # Calculate SMA
+        sma = calculate_sma(prices)
+        if sma is not None:
+            st.write(f"📊 5-period SMA: ${sma:.4f}")
+        else:
+            st.write("📊 SMA not available.")
+
+        # Price Chart
+        df = pd.DataFrame({"Price": prices}, index=pd.date_range(end=pd.Timestamp.now(), periods=len(prices), freq="min"))
         st.line_chart(df)
 
-# Auto-refresh every 60s
-st.caption("App will refresh every 60 seconds to fetch latest prices.")
-st_autorefresh = st.empty()
-st_autorefresh.markdown("<meta http-equiv='refresh' content='60'>", unsafe_allow_html=True)
+# ---- Auto Refresh ----
+st.experimental_autorefresh(interval=60 * 1000, key="refresh")
