@@ -52,7 +52,7 @@ def calculate_sma(prices, length=5):
 
 def save_data_to_supabase(symbol, price):
     now = datetime.utcnow().isoformat()
-    supabase.table("crypto_prices").insert({
+    supabase.table("prices").insert({
         "coin": symbol,
         "price": price,
         "timestamp": now
