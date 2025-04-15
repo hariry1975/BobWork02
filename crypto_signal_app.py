@@ -1,109 +1,87 @@
-
-
 import streamlit as st
 import requests
 import pandas as pd
 import datetime
-from supabase import create_client, Client
+import plotly.graph_objects as go
 
-# ---- Supabase Config ----
-SUPABASE_URL = "https://ncrxfifndtbinniykddg.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5jcnhmaWZuZHRiaW5uaXlrZGRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDQ2MjQ2NjEsImV4cCI6MjA2MDIwMDY2MX0.wvzWT-8IqCTcA4CauJCm8KCEtQXPoJqv_Lh3tzpF1Lg"
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-st.set_page_config(page_title="Crypto Signal App", layout="wide")
-
-st.title("📈 Crypto Signal Dashboard")
-
-# CoinGecko coin ID mapping
-coin_ids = {
+# --- CONFIG ---
+COINS = {
     "DOGE": "dogecoin",
     "XRP": "ripple",
     "ADA": "cardano",
-    "TRUMP": "maga"
+    "TRUMP": "maga"  # Note: CoinGecko might not list this as 'trump'
 }
 
-def fetch_price(coin_id):
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+# --- FUNCTIONS ---
+def fetch_last_1_hour_prices(coin_id):
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    params = {
+        'vs_currency': 'usd',
+        'interval': 'minutely',
+        'days': 1
+    }
     try:
-        res = requests.get(url).json()
-        return res[coin_id]["usd"]
-    except:
-        return None
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        data = res.json()
+        prices = data["prices"][-60:]  # Last 60 minutes
+        return [price[1] for price in prices], [datetime.datetime.fromtimestamp(price[0]/1000) for price in prices]
+    except Exception as e:
+        st.error(f"Error fetching price data for {coin_id}: {e}")
+        return None, None
 
 def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1:
+    if len(prices) < period:
         return None
-
-    df = pd.DataFrame(prices, columns=["close"])
-    delta = df["close"].diff()
+    delta = pd.Series(prices).diff()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
-
     avg_gain = gain.rolling(window=period).mean()
     avg_loss = loss.rolling(window=period).mean()
-
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
+    return rsi.iloc[-1] if not rsi.empty else None
 
-    return rsi.iloc[-1]
+def calculate_sma(prices, length=5):
+    if len(prices) < length:
+        return None
+    return sum(prices[-length:]) / length
 
-def save_price(symbol, price):
-    try:
-        supabase.table("crypto_data").insert({
-            "symbol": symbol,
-            "price": price,
-            "timestamp": datetime.datetime.utcnow().isoformat()
-        }).execute()
-    except Exception as e:
-        st.warning(f"🔄 Could not save {symbol} to Supabase: {e}")
+def plot_chart(times, prices, symbol):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=times, y=prices, mode='lines', name=symbol))
+    fig.update_layout(title=f"{symbol} Price (1 Hour)", xaxis_title="Time", yaxis_title="USD", height=300)
+    return fig
 
-# Auto-refresh workaround using meta tag
-st.markdown(
-    '<meta http-equiv="refresh" content="60">',
-    unsafe_allow_html=True
-)
+# --- STREAMLIT APP ---
+st.set_page_config(page_title="Crypto Signal App", layout="wide")
+st.title("📈 Real-Time Crypto Signal Tracker")
 
-col1, col2 = st.columns(2)
+for symbol, coin_id in COINS.items():
+    with st.container():
+        st.subheader(f"🔹 {symbol} ({coin_id})")
+        prices, times = fetch_last_1_hour_prices(coin_id)
 
-for i, (symbol, coin_id) in enumerate(coin_ids.items()):
-    with (col1 if i % 2 == 0 else col2):
-        st.markdown(f"## 💰 {symbol}")
-        prices = []
-        for _ in range(14):
-            price = fetch_price(coin_id)
-            if price:
-                prices.append(price)
+        if prices and times:
+            current_price = prices[-1]
+            rsi = calculate_rsi(prices)
+            sma = calculate_sma(prices)
 
-        live_price = fetch_price(coin_id)
-        if live_price is None:
-            st.error("❌ Could not retrieve price data.")
-            continue
-
-        prices.append(live_price)
-        save_price(symbol, live_price)
-
-        st.metric(label="Current Price (USD)", value=f"${live_price:.4f}")
-
-        sma = sum(prices[-5:]) / 5 if len(prices) >= 5 else None
-        rsi = calculate_rsi(prices)
-
-        if sma is not None:
-            st.markdown(f"📉 **SMA-5 = {sma:.4f}**")
-        else:
-            st.markdown("📉 SMA-5 not available.")
-
-        if rsi is not None:
-            if rsi < 30:
-                st.success(f"🟢 RSI = {rsi:.2f} → **Buy Signal**")
-            elif rsi > 70:
-                st.error(f"🔴 RSI = {rsi:.2f} → **Sell Signal**")
+            st.metric(label="Current Price (USD)", value=f"${current_price:.4f}")
+            if rsi is not None:
+                st.info(f"RSI = {rsi:.2f}")
+                if rsi < 30:
+                    st.success("✅ Buy Signal")
+                elif rsi > 70:
+                    st.error("🚨 Sell Signal")
+                else:
+                    st.warning("😐 No strong signal")
             else:
-                st.info(f"⏳ RSI = {rsi:.2f} → No strong signal yet.")
+                st.warning("RSI not available yet.")
+
+            if sma is not None:
+                st.markdown(f"**SMA (5-min avg):** ${sma:.4f}")
+
+            st.plotly_chart(plot_chart(times, prices, symbol), use_container_width=True)
         else:
-            st.info("⏳ RSI not available yet. Waiting for enough data.")
-
-        st.line_chart(prices, height=200)
-
+            st.error("Could not retrieve 1-hour price data.")
